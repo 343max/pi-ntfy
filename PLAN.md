@@ -14,39 +14,41 @@ Enable a seamless workflow: start work on your desk, walk away, get notified on 
 - **Conversion**: Divide by 1,000,000,000 to get seconds
 - **Configurable threshold**: Default 60 seconds, customizable via config
 - **Check timing**: Only check at `agent_end` event (not polling)
+- **On failure**: Send notification anyway (fail open)
 
 ### 2. NTFY.sh Integration
 
-- **Method**: Use `ntfy` CLI (already fully configured including auth)
+- **Method**: Use `ntfy publish` CLI (already fully configured including auth)
 - **Topic**: Configurable, defaults to `"pi"`
-- **Headers**:
-  - `Title`: "Pi Ready" or similar ^[WITH THE CWD!]
-  - `Priority`: 4 (high) for urgent attention
-  - `Tags`: `robot` emoji 🤖
-  - ^[-S session-id so old notifications will be overwritten]
-  - ^[run ntfy send --help to read the documentation how to use it!]
+- **Options**:
+  - `--title`: Format "pi 🤖 <CWD>" (with /Users/max replaced by ~/)
+  - `-S <session-id>`: Full SHA256 hash of session file path
 
 ### 3. Notification Content
 
-Include useful context so the user knows what happened:
+- **Title**: "pi 🤖 ~/Projects/foo" (CWD with ~ replacement)
+- **Message**: Last assistant message (truncated if too long)
+- **Session ID**: Full SHA256 of session file path for `-S` flag
 
-- **Message**: Last assistant message (truncated if too long) + CWD ^[CWD should be part of the title]
-- **Session name** (if set)
-- **Working directory** (important for context)
+The `agent_end` event includes `event.messages` - an array of `AgentMessage` from this prompt. We can extract the last assistant message to include in the notification body.
 
-The `agent_end` event includes `event.messages` - an array of `AgentMessage` from this prompt. We can extract the last assistant message to include in the notification.
+### 4. Error Handling
 
-### 4. Configuration
+Pipe `ntfy publish` stderr to `ctx.ui.notify()` so the user sees any errors (network, auth, etc.) but workflow isn't interrupted.
 
-Environment variables (simple, no config file needed):
+### 5. Configuration
 
+Environment variables:
 - `PI_NTFY_TOPIC` - Topic name (default: "pi")
 - `PI_NTFY_IDLE_SECONDS` - Idle threshold in seconds (default: 60)
 - `PI_NTFY_DISABLED` - Set to "1" to disable
 
-### 5. Rate Limiting / Deduplication
+### 6. /ntfy-test Command
 
-**None** - Just send the notification. The user can't start new processes fast enough to spam.
+Register `/ntfy-test` command that:
+- Skips idle check
+- Sends notification immediately
+- Shows result via `ctx.ui.notify()`
 
 ## Event Flow
 
@@ -62,9 +64,10 @@ agent_end ──► Check idle time via ioreg
    │              ▼
    │         Idle < threshold? ──► Skip notification
    │              │
-   │              Yes
+   │              Yes (or ioreg failed)
    │              ▼
    │         Send NTFY notification
+   │         (with -S session-id for updates)
    │              │
    ▼              ▼
 [wait for user input]
@@ -74,6 +77,11 @@ agent_end ──► Check idle time via ioreg
 
 ```typescript
 import type { ExtensionAPI, AgentMessage } from "@mariozechner/pi-coding-agent";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { createHash } from "node:crypto";
+
+const execFileAsync = promisify(execFile);
 
 // Config from environment
 const config = {
@@ -85,38 +93,83 @@ const config = {
 // Get idle time on macOS
 async function getIdleTimeSeconds(): Promise<number> {
   // ioreg -c IOHIDSystem -d 4 | awk '/HIDIdleTime/ {print $NF/1000000000}'
+  // On error, return Infinity to trigger notification
 }
 
 // Extract text from the last assistant message
 function getLastAssistantText(messages: AgentMessage[]): string | undefined {
   // Iterate backwards to find last assistant message
-  // Extract text content blocks, join them, truncate to ~200 chars
+  // Extract text content blocks, join them, truncate to ~400 chars
+}
+
+// Get session ID (full SHA256)
+function getSessionId(ctx: ExtensionContext): string {
+  const sessionFile = ctx.sessionManager.getSessionFile() || "unknown";
+  return createHash("sha256").update(sessionFile).digest("hex");
 }
 
 // Send notification via ntfy CLI
-async function sendNotification(title: string, message: string): Promise<void> {
-  // ntfy publish --title="..." --priority=4 --tags=robot <topic> "message"
+async function sendNotification(
+  topic: string,
+  title: string,
+  message: string,
+  sequenceId: string,
+  ctx: ExtensionContext,
+): Promise<void> {
+  // ntfy publish --title="..." -S <sequence-id> <topic> "message"
+  // On error, pipe stderr to ctx.ui.notify()
 }
 
 export default function (pi: ExtensionAPI) {
   // Main logic: check idle and notify
   pi.on("agent_end", async (event, ctx) => {
     if (config.disabled) return;
-    if (process.platform !== "darwin") return; // macOS only for now
+    if (process.platform !== "darwin") return;
 
     const idleSeconds = await getIdleTimeSeconds();
     if (idleSeconds < config.idleSeconds) return;
 
-    const sessionName = pi.getSessionName();
     const lastMessage = getLastAssistantText(event.messages);
+    const sessionId = getSessionId(ctx);
+    const cwd = ctx.cwd.replace(/^\/Users\/[^/]+/, "~");
+    const title = `pi 🤖 ${cwd}`;
 
-    // Build message: last assistant text + CWD
-    let message = lastMessage || "Ready for input";
-    message += `\nCWD: ${ctx.cwd}`;
+    await sendNotification(
+      config.topic,
+      title,
+      lastMessage || "Ready for input",
+      sessionId,
+      ctx,
+    );
+  });
 
-    await sendNotification(sessionName ? `Pi: ${sessionName}` : "Pi Ready", message);
+  // Test command
+  pi.registerCommand("ntfy-test", {
+    description: "Send test notification immediately",
+    handler: async (_args, ctx) => {
+      const sessionId = getSessionId(ctx);
+      const cwd = ctx.cwd.replace(/^\/Users\/[^/]+/, "~");
+      const title = `pi 🤖 ${cwd}`;
+      await sendNotification(
+        config.topic,
+        title,
+        "Test notification from pi",
+        sessionId,
+        ctx,
+      );
+    },
   });
 }
+```
+
+## NTFY CLI Command
+
+```bash
+ntfy publish \
+  --title="pi 🤖 ~/Projects/my-project" \
+  -S "<64-char-sha256-hash>" \
+  pi \
+  "I've completed the refactoring. All tests pass."
 ```
 
 ## Message Type Reference
@@ -128,7 +181,6 @@ From `agent_end` event, `event.messages` contains `AgentMessage[]`:
 interface AssistantMessage {
   role: "assistant";
   content: (TextContent | ThinkingContent | ToolCall)[];
-  // ... other fields
 }
 
 interface TextContent {
@@ -138,37 +190,19 @@ interface TextContent {
 ```
 
 To get the last assistant response:
-
-1. Filter messages by `role === "assistant"`
-2. Take the last one
+1. Iterate `event.messages` backwards
+2. Find message with `role === "assistant"`
 3. Extract `text` from `content` blocks where `type === "text"`
-4. Join and truncate
+4. Join and truncate to ~400 characters
 
 ## Files to Create
 
 1. **`ntfy.ts`** - Main extension file
 2. **`README.md`** - Installation and usage instructions
 
-## Testing Plan
-
-1. Load extension with `pi -e ./ntfy.ts`
-2. Run a simple prompt: "say hello"
-3. While active: should NOT notify (not idle)
-4. Wait 60+ seconds without touching computer
-5. Run another prompt: should notify
-6. Verify notification appears on phone
-
-## Future Enhancements
-
-1. **Cross-platform idle detection**: Linux (`xprintidle`), Windows (GetLastInputInfo)
-2. **Richer context**: Include summary of changes made
-3. **Action buttons**: "Continue on mobile" with session URL
-4. **Configurable priorities**: Different priority for errors vs success
-
 ## References
 
 - [ntfy.sh docs](https://docs.ntfy.sh/publish/)
 - ntfy CLI: `ntfy publish --help`
 - macOS idle detection: `ioreg -c IOHIDSystem`
-- pi extensions docs: `/Users/max/.bun/install/global/node_modules/@mariozechner/pi-coding-agent/docs/extensions.md`
-- Message types: `/Users/max/.bun/install/global/node_modules/@mariozechner/pi-coding-agent/docs/session.md`
+- pi extensions docs
