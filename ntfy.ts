@@ -1,4 +1,4 @@
-import type { ExtensionAPI, AgentMessage, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, AgentEndEvent } from "@mariozechner/pi-coding-agent";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
@@ -19,7 +19,7 @@ async function getIdleTimeSeconds(): Promise<number> {
     const match = stdout.match(/"HIDIdleTime"\s*=\s*(\d+)/);
     if (match) {
       // HIDIdleTime is in nanoseconds
-      const nanoseconds = parseInt(match[1], 10);
+      const nanoseconds = parseInt(match[1] || "0", 10);
       return nanoseconds / 1_000_000_000;
     }
   } catch {
@@ -30,10 +30,12 @@ async function getIdleTimeSeconds(): Promise<number> {
 }
 
 // Extract text from the last assistant message
-function getLastAssistantText(messages: AgentMessage[]): string | undefined {
+function getLastAssistantText(messages: AgentEndEvent["messages"]): string | undefined {
   // Iterate backwards to find last assistant message
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
+
+    if (msg === undefined) continue;
     if (msg.role !== "assistant") continue;
     if (!Array.isArray(msg.content)) continue;
 
