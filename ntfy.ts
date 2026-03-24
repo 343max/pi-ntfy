@@ -134,7 +134,7 @@ export default function (pi: ExtensionAPI) {
       const sessionId = getSequenceId(ctx);
       const cwd = ctx.cwd.replace(/^\/Users\/[^/]+/, "~");
       const title = `pi 🤖 ${cwd}`;
-      const message = `Your lucky emojis for the day are: ${getRandomEmojis()} ${sessionId}`;
+      const message = `Your lucky emojis for the day are: ${getRandomEmojis()}`;
       await sendNotification(config.topic, title, message, sessionId, ctx);
     },
   });
