@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext, AgentEndEvent } from "@mariozechne
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
+import { complete, completeSimple } from "@mariozechner/pi-ai";
 
 const execFileAsync = promisify(execFile);
 
@@ -47,18 +48,70 @@ function getLastAssistantText(messages: AgentEndEvent["messages"]): string | und
     }
 
     if (textParts.length > 0) {
-      const fullText = textParts.join("\n").trim();
-      // Truncate to ~400 chars
-      if (fullText.length > 400) {
-        return fullText.slice(0, 397) + "...";
-      }
-      return fullText;
+      return textParts.join("\n").trim();
     }
   }
   return undefined;
 }
 
-// Get session ID (full SHA256)
+// Check if text is simple enough to skip LLM processing
+function shouldSkipProcessing(text: string): boolean {
+  if (text.length > 400) return false;
+
+  const markdownPatterns = [
+    /```/, // Code blocks
+    /`[^`]+`/, // Inline code
+    /^#{1,6}\s/m, // Headers
+    /\*\*|__/, // Bold
+    /\*|_/, // Italic
+    /\[.+\]\(.+\)/, // Links
+    /^\s*[-*+]\s/m, // Lists
+    /^\s*\d+\.\s/m, // Numbered lists
+    />\s/, // Blockquotes
+    /\|.+\|/, // Tables
+  ];
+
+  return !markdownPatterns.some((p) => p.test(text));
+}
+
+// Summarize text using LLM
+async function summarizeWithLLM(text: string, ctx: ExtensionContext): Promise<string> {
+  const model = ctx.model;
+  if (!model) throw new Error("No model configured");
+
+  const apiKey = await ctx.modelRegistry.getApiKey(model);
+  if (!apiKey) throw new Error("No API key");
+
+  const input = text.slice(0, 1000);
+
+  const prompt = `Summarize this in under 400 characters using only text and emojis. Focus on the key result or action:\n\n${input}`;
+
+  const response = await completeSimple(
+    model,
+    {
+      messages: [
+        {
+          role: "user" as const,
+          content: [{ type: "text" as const, text: prompt }],
+          timestamp: Date.now(),
+        },
+      ],
+    },
+    { apiKey },
+  );
+
+  if (response.stopReason === "error") {
+    throw new Error(response.errorMessage);
+  }
+
+  return response.content
+    .filter((c): c is { type: "text"; text: string } => c.type === "text")
+    .map((c) => c.text)
+    .join(" ")
+    .slice(0, 400);
+}
+
+// Get sequence ID (full SHA256 of CWD)
 function getSequenceId(ctx: ExtensionContext): string {
   return createHash("sha256").update(ctx.cwd).digest("hex");
 }
@@ -89,12 +142,34 @@ export default function (pi: ExtensionAPI) {
     const idleSeconds = await getIdleTimeSeconds();
     if (idleSeconds < config.idleSeconds) return;
 
-    const lastMessage = getLastAssistantText(event.messages);
+    const text = getLastAssistantText(event.messages);
+    if (!text) return;
+
     const sessionId = getSequenceId(ctx);
     const cwd = ctx.cwd.replace(/^\/Users\/[^/]+/, "~");
     const title = `pi 🤖 ${cwd}`;
 
-    await sendNotification(config.topic, title, lastMessage || "Ready for input", sessionId, ctx);
+    // Plausibility check: simple enough to send as-is
+    if (shouldSkipProcessing(text)) {
+      await sendNotification(config.topic, title, text, sessionId, ctx);
+      return;
+    }
+
+    // Fire and forget: summarize and send
+    const processAndNotify = async () => {
+      try {
+        const summary = await summarizeWithLLM(text, ctx);
+        await sendNotification(config.topic, title, `Summary: ${summary}`, sessionId, ctx);
+      } catch (error) {
+        // Fallback: send truncated original
+
+        const fallback = text.slice(0, 397) + "...";
+        await sendNotification(config.topic, title, fallback, sessionId, ctx);
+      }
+    };
+
+    // Don't await - let agent continue immediately
+    processAndNotify().catch(console.error);
   });
 
   // Emoji pool for test messages
@@ -134,7 +209,7 @@ export default function (pi: ExtensionAPI) {
       const sessionId = getSequenceId(ctx);
       const cwd = ctx.cwd.replace(/^\/Users\/[^/]+/, "~");
       const title = `pi 🤖 ${cwd}`;
-      const message = `Your lucky emojis for the day are: ${getRandomEmojis()}`;
+      const message = `${cwd} - Your lucky emojis for the day are: ${getRandomEmojis()}`;
       await sendNotification(config.topic, title, message, sessionId, ctx);
     },
   });
