@@ -9,7 +9,7 @@ const execFileAsync = promisify(execFile);
 // Config from environment
 const config = {
   topic: process.env.PI_NTFY_TOPIC || "pi",
-  idleSeconds: parseInt(process.env.PI_NTFY_IDLE_SECONDS || "60", 10),
+  idleSeconds: parseInt(process.env.PI_NTFY_IDLE_SECONDS || "20", 10),
   disabled: process.env.PI_NTFY_DISABLED === "1",
 };
 
