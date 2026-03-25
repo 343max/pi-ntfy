@@ -5,13 +5,14 @@ Sends push notifications via [ntfy.sh](https://ntfy.sh) when the pi agent comple
 ## Requirements
 
 - macOS (for idle detection)
-- [ntfy CLI](https://ntfy.sh/docs/install/) installed and configured
+- [ntfy CLI](https://ntfy.sh/docs/install/) installed and configured. The `ntfy.ts` calls `ntfy send` when it sends a notification so make sure that works.
 
 ## Installation
 
-1. Copy `ntfy.ts` to your pi extensions directory:
+1. Install:
+
    ```bash
-   cp ntfy.ts ~/.pi/agent/extensions/
+   pi install ./ntfy.ts
    ```
 
 2. Or run directly for testing:
@@ -23,15 +24,16 @@ Sends push notifications via [ntfy.sh](https://ntfy.sh) when the pi agent comple
 
 Environment variables:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PI_NTFY_TOPIC` | `pi` | ntfy topic to publish to |
-| `PI_NTFY_IDLE_SECONDS` | `60` | Idle time threshold (seconds) |
-| `PI_NTFY_DISABLED` | - | Set to `1` to disable notifications |
+| Variable               | Default | Description                         |
+| ---------------------- | ------- | ----------------------------------- |
+| `PI_NTFY_TOPIC`        | `pi`    | ntfy topic to publish to            |
+| `PI_NTFY_IDLE_SECONDS` | `20`    | Idle time threshold (seconds)       |
+| `PI_NTFY_DISABLED`     | -       | Set to `1` to disable notifications |
 
 ## Usage
 
 The extension automatically sends notifications when:
+
 1. The pi agent finishes processing (`agent_end` event)
 2. You've been idle for at least `PI_NTFY_IDLE_SECONDS` (default 60s)
 
@@ -46,7 +48,7 @@ To send a test notification immediately (skips idle check):
 ## How It Works
 
 - **Idle Detection**: Uses `ioreg -c IOHIDSystem` to get HID idle time on macOS
-- **Notification Content**: 
+- **Notification Content**:
   - Title: `pi 🤖 ~/Projects/my-project` (CWD with `~` shorthand)
   - Message: Last assistant response (truncated to ~400 chars)
 - **Session Tracking**: Uses SHA256 hash of session file as sequence ID (`-S` flag), so notifications update instead of stacking
