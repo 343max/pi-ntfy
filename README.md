@@ -1,4 +1,4 @@
-# Pi NTFY Extension
+# Pi ntfy.sh Extension
 
 Sends push notifications via [ntfy.sh](https://ntfy.sh) when the pi agent completes work and you're idle. Perfect for starting work on your desk and seamlessly continuing on your mobile device.
 
