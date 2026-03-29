@@ -12,12 +12,12 @@ Sends push notifications via [ntfy.sh](https://ntfy.sh) when the pi agent comple
 1. Install:
 
    ```bash
-   pi install ./ntfy.ts
+   pi install https://github.com/343max/pi-ntfy
    ```
 
 2. Or run directly for testing:
    ```bash
-   pi -e ./ntfy.ts
+   pi -e https://github.com/343max/pi-ntfy
    ```
 
 ## Configuration
