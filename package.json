@@ -1,11 +1,9 @@
 {
   "name": "pi-ntfy",
-  "private": true,
-  "devDependencies": {
-    "@mariozechner/pi-coding-agent": "^0.62.0",
-    "@types/bun": "latest"
-  },
+  "keywords": ["pi-package"],
   "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*",
     "typescript": "^5"
   },
   "pi": {

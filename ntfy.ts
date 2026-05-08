@@ -1,8 +1,8 @@
-import type { ExtensionAPI, ExtensionContext, AgentEndEvent } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, AgentEndEvent } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
-import { complete, completeSimple } from "@mariozechner/pi-ai";
+import { completeSimple } from "@earendil-works/pi-ai";
 
 const execFileAsync = promisify(execFile);
 
