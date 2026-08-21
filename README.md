@@ -35,7 +35,13 @@ Environment variables:
 The extension automatically sends notifications when:
 
 1. The pi agent finishes processing (`agent_end` event)
-2. You've been idle for at least `PI_NTFY_IDLE_SECONDS` (default 60s)
+2. The pi agent pauses to ask you a question (`ask_user_question` tool)
+
+Both only fire when you've been idle for at least `PI_NTFY_IDLE_SECONDS` (default 20s).
+
+Notifications are only sent from an **interactive (TUI) session**. One-shot/headless
+invocations — `pi -p`, `pi --mode json`, and `pi --mode rpc` — never notify, since
+there's no human at the terminal to walk away from.
 
 ### Manual Test
 

@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext, AgentEndEvent } from "@earendil-wo
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
-import { completeSimple } from "@earendil-works/pi-ai";
+import { completeSimple } from "@earendil-works/pi-ai/compat";
 
 const execFileAsync = promisify(execFile);
 
@@ -79,8 +79,10 @@ async function summarizeWithLLM(text: string, ctx: ExtensionContext): Promise<st
   const model = ctx.model;
   if (!model) throw new Error("No model configured");
 
-  const apiKey = await ctx.modelRegistry.getApiKey(model);
-  if (!apiKey) throw new Error("No API key");
+  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+  if (!auth.ok) throw new Error(auth.error);
+  if (!auth.apiKey) throw new Error("No API key");
+  const apiKey = auth.apiKey;
 
   const input = text.slice(0, 1000);
 
@@ -112,8 +114,13 @@ async function summarizeWithLLM(text: string, ctx: ExtensionContext): Promise<st
 }
 
 // Get sequence ID (full SHA256 of CWD)
-function getSequenceId(ctx: ExtensionContext): string {
-  return createHash("sha256").update(ctx.cwd).digest("hex");
+function getSequenceId(cwd: string): string {
+  return createHash("sha256").update(cwd).digest("hex");
+}
+
+// Shorten the cwd for display (~/Projects/foo)
+function displayCwd(cwd: string): string {
+  return cwd.replace(/^\/Users\/[^/]+/, "~");
 }
 
 // Send notification via ntfy CLI
@@ -122,20 +129,37 @@ async function sendNotification(
   title: string,
   message: string,
   sequenceId: string,
-  ctx: ExtensionContext,
+  ctx?: ExtensionContext,
 ): Promise<void> {
   try {
     await execFileAsync("ntfy", ["publish", "--title", title, "-S", sequenceId, topic, message]);
   } catch (error: any) {
-    // Show error to user via notify
+    // Show error to user via notify (when a ctx is available)
     const errorMsg = error?.stderr || error?.message || String(error);
-    ctx.ui.notify(`ntfy error: ${errorMsg}`, "error");
+    if (ctx) {
+      ctx.ui.notify(`ntfy error: ${errorMsg}`, "error");
+    } else {
+      console.error(`ntfy error: ${errorMsg}`);
+    }
   }
 }
 
 export default function (pi: ExtensionAPI) {
+  // Session context, tracked here so event-bus handlers (which receive no ctx)
+  // can apply the same TUI-only, idle-based gating as the agent_end handler.
+  let sessionCwd: string | undefined;
+  let sessionMode: string | undefined;
+
+  pi.on("session_start", (_event, ctx) => {
+    sessionCwd = ctx.cwd;
+    sessionMode = ctx.mode;
+  });
+
   // Main logic: check idle and notify
   pi.on("agent_end", async (event, ctx) => {
+    // Only notify in interactive TUI sessions. Suppresses -p, --mode json, and
+    // --mode rpc, where there is no human at the terminal to walk away from.
+    if (ctx.mode !== "tui") return;
     if (config.disabled) return;
     if (process.platform !== "darwin") return;
 
@@ -145,9 +169,8 @@ export default function (pi: ExtensionAPI) {
     const text = getLastAssistantText(event.messages);
     if (!text) return;
 
-    const sessionId = getSequenceId(ctx);
-    const cwd = ctx.cwd.replace(/^\/Users\/[^/]+/, "~");
-    const title = `pi 🤖 ${cwd}`;
+    const sessionId = getSequenceId(ctx.cwd);
+    const title = `pi 🤖 ${displayCwd(ctx.cwd)}`;
 
     // Plausibility check: simple enough to send as-is
     if (shouldSkipProcessing(text)) {
@@ -202,12 +225,45 @@ export default function (pi: ExtensionAPI) {
     return shuffled.slice(0, 3).join(" ");
   }
 
+  // Notify when the agent pauses to ask the user a question via the
+  // ask_user_question extension (@juicesharp/rpiv-ask-user-question). That
+  // extension emits "rpiv:ask-user:prompt" on the shared event bus when it
+  // shows a questionnaire. agent_end only fires after the user answers, so
+  // without this hook a question asked while you're away never notifies.
+  async function notifyOnAskUser(data: unknown): Promise<void> {
+    if (config.disabled) return;
+    if (process.platform !== "darwin") return;
+    if (sessionMode !== "tui") return;
+    if (!sessionCwd) return;
+
+    const payload = data as { questions?: Array<{ question?: string }> };
+    const questions = payload.questions ?? [];
+    const question = questions[0]?.question;
+    if (!question) return;
+
+    const idleSeconds = await getIdleTimeSeconds();
+    if (idleSeconds < config.idleSeconds) return;
+
+    const extra = questions.length > 1 ? ` (+${questions.length - 1} more)` : "";
+    const message = `Question: ${question}${extra}`.slice(0, 400);
+    await sendNotification(
+      config.topic,
+      `pi 🤖 ${displayCwd(sessionCwd)}`,
+      message,
+      getSequenceId(sessionCwd),
+    );
+  }
+
+  pi.events.on("rpiv:ask-user:prompt", (data) => {
+    void notifyOnAskUser(data);
+  });
+
   // Test command
   pi.registerCommand("ntfy-test", {
     description: "Send test notification immediately",
     handler: async (_args, ctx) => {
-      const sessionId = getSequenceId(ctx);
-      const cwd = ctx.cwd.replace(/^\/Users\/[^/]+/, "~");
+      const sessionId = getSequenceId(ctx.cwd);
+      const cwd = displayCwd(ctx.cwd);
       const title = `pi 🤖 ${cwd}`;
       const message = `${cwd} - Your lucky emojis for the day are: ${getRandomEmojis()}`;
       await sendNotification(config.topic, title, message, sessionId, ctx);
