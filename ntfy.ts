@@ -11,7 +11,20 @@ const config = {
   topic: process.env.PI_NTFY_TOPIC || "pi",
   idleSeconds: parseInt(process.env.PI_NTFY_IDLE_SECONDS || "20", 10),
   disabled: process.env.PI_NTFY_DISABLED === "1",
+  // URL template opened when the notification is tapped. Supports
+  // {placeholder} and <placeholder> tokens, see buildClickVars().
+  // Empty string disables the click action.
+  clickUrl:
+    process.env.PI_NTFY_CLICK_URL ||
+    "https://pi-macbook.tun.43v.de/?session=<sessionid>",
 };
+
+// Session-scoped state captured on session_start, so event-bus handlers
+// (which receive no ctx) can build the same notification payload.
+let sessionCwd: string | undefined;
+let sessionMode: string | undefined;
+let sessionId: string | undefined;
+let sessionFile: string | undefined;
 
 // Get idle time on macOS (in seconds)
 async function getIdleTimeSeconds(): Promise<number> {
@@ -123,21 +136,85 @@ function displayCwd(cwd: string): string {
   return cwd.replace(/^\/Users\/[^/]+/, "~");
 }
 
+// Placeholder variables available in the PI_NTFY_CLICK_URL template.
+// Both {name} and <name> syntax are supported, case-insensitive.
+// Unknown placeholders are left untouched so a misconfigured template
+// is visible instead of silently producing a broken URL.
+type ClickVars = {
+  sessionid: string; // pi session UUID (sessionManager.getSessionId())
+  sequenceid: string; // SHA256 of cwd, same id used for ntfy dedup (-S)
+  sessionfile: string; // basename of the session file (empty if in-memory)
+  cwd: string; // current working directory
+  cwdencoded: string; // cwd URL-encoded, for query parameters
+  title: string; // notification title
+  titleencoded: string; // title URL-encoded, for query parameters
+  topic: string; // ntfy topic
+  timestamp: number; // unix epoch seconds (UTC)
+};
+
+function renderTemplate(template: string, vars: Record<string, string | number>): string {
+  return template.replace(/\{(\w+)\}|<(\w+)>/g, (match, brace, angle) => {
+    const key = (brace ?? angle).toLowerCase();
+    const value = vars[key];
+    return value === undefined ? match : String(value);
+  });
+}
+
+// Build the placeholder map for the click URL template.
+function buildClickVars(input: {
+  sessionId: string;
+  sequenceId: string;
+  sessionFile: string | undefined;
+  cwd: string;
+  title: string;
+  topic: string;
+}): ClickVars {
+  return {
+    sessionid: input.sessionId,
+    sequenceid: input.sequenceId,
+    sessionfile: input.sessionFile ? input.sessionFile.split("/").pop() ?? "" : "",
+    cwd: input.cwd,
+    cwdencoded: encodeURIComponent(input.cwd),
+    title: input.title,
+    titleencoded: encodeURIComponent(input.title),
+    topic: input.topic,
+    timestamp: Math.floor(Date.now() / 1000),
+  };
+}
+
+// Render the configured click URL, or undefined when disabled.
+function resolveClickUrl(input: {
+  sessionId: string;
+  sequenceId: string;
+  sessionFile: string | undefined;
+  cwd: string;
+  title: string;
+  topic: string;
+}): string | undefined {
+  if (!config.clickUrl) return undefined;
+  return renderTemplate(config.clickUrl, buildClickVars(input));
+}
+
 // Send notification via ntfy CLI
 async function sendNotification(
   topic: string,
   title: string,
   message: string,
   sequenceId: string,
-  ctx?: ExtensionContext,
+  options: { clickUrl?: string; ctx?: ExtensionContext } = {},
 ): Promise<void> {
   try {
-    await execFileAsync("ntfy", ["publish", "--title", title, "-S", sequenceId, topic, message]);
+    const args = ["publish", "--title", title, "-S", sequenceId];
+    if (options.clickUrl) {
+      args.push("--click", options.clickUrl);
+    }
+    args.push(topic, message);
+    await execFileAsync("ntfy", args);
   } catch (error: any) {
     // Show error to user via notify (when a ctx is available)
     const errorMsg = error?.stderr || error?.message || String(error);
-    if (ctx) {
-      ctx.ui.notify(`ntfy error: ${errorMsg}`, "error");
+    if (options.ctx) {
+      options.ctx.ui.notify(`ntfy error: ${errorMsg}`, "error");
     } else {
       console.error(`ntfy error: ${errorMsg}`);
     }
@@ -145,14 +222,11 @@ async function sendNotification(
 }
 
 export default function (pi: ExtensionAPI) {
-  // Session context, tracked here so event-bus handlers (which receive no ctx)
-  // can apply the same TUI-only, idle-based gating as the agent_end handler.
-  let sessionCwd: string | undefined;
-  let sessionMode: string | undefined;
-
   pi.on("session_start", (_event, ctx) => {
     sessionCwd = ctx.cwd;
     sessionMode = ctx.mode;
+    sessionId = ctx.sessionManager.getSessionId();
+    sessionFile = ctx.sessionManager.getSessionFile();
   });
 
   // Main logic: check idle and notify
@@ -169,12 +243,20 @@ export default function (pi: ExtensionAPI) {
     const text = getLastAssistantText(event.messages);
     if (!text) return;
 
-    const sessionId = getSequenceId(ctx.cwd);
+    const sequenceId = getSequenceId(ctx.cwd);
     const title = `pi 🤖 ${displayCwd(ctx.cwd)}`;
+    const clickUrl = resolveClickUrl({
+      sessionId: ctx.sessionManager.getSessionId() ?? sequenceId,
+      sequenceId,
+      sessionFile: ctx.sessionManager.getSessionFile(),
+      cwd: ctx.cwd,
+      title,
+      topic: config.topic,
+    });
 
     // Plausibility check: simple enough to send as-is
     if (shouldSkipProcessing(text)) {
-      await sendNotification(config.topic, title, text, sessionId, ctx);
+      await sendNotification(config.topic, title, text, sequenceId, { clickUrl, ctx });
       return;
     }
 
@@ -182,12 +264,15 @@ export default function (pi: ExtensionAPI) {
     const processAndNotify = async () => {
       try {
         const summary = await summarizeWithLLM(text, ctx);
-        await sendNotification(config.topic, title, `Summary: ${summary}`, sessionId, ctx);
+        await sendNotification(config.topic, title, `Summary: ${summary}`, sequenceId, {
+          clickUrl,
+          ctx,
+        });
       } catch (error) {
         // Fallback: send truncated original
 
         const fallback = text.slice(0, 397) + "...";
-        await sendNotification(config.topic, title, fallback, sessionId, ctx);
+        await sendNotification(config.topic, title, fallback, sequenceId, { clickUrl, ctx });
       }
     };
 
@@ -246,12 +331,17 @@ export default function (pi: ExtensionAPI) {
 
     const extra = questions.length > 1 ? ` (+${questions.length - 1} more)` : "";
     const message = `Question: ${question}${extra}`.slice(0, 400);
-    await sendNotification(
-      config.topic,
-      `pi 🤖 ${displayCwd(sessionCwd)}`,
-      message,
-      getSequenceId(sessionCwd),
-    );
+    const sequenceId = getSequenceId(sessionCwd);
+    const title = `pi 🤖 ${displayCwd(sessionCwd)}`;
+    const clickUrl = resolveClickUrl({
+      sessionId: sessionId ?? sequenceId,
+      sequenceId,
+      sessionFile,
+      cwd: sessionCwd,
+      title,
+      topic: config.topic,
+    });
+    await sendNotification(config.topic, title, message, sequenceId, { clickUrl });
   }
 
   pi.events.on("rpiv:ask-user:prompt", (data) => {
@@ -262,11 +352,19 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("ntfy-test", {
     description: "Send test notification immediately",
     handler: async (_args, ctx) => {
-      const sessionId = getSequenceId(ctx.cwd);
+      const sequenceId = getSequenceId(ctx.cwd);
       const cwd = displayCwd(ctx.cwd);
       const title = `pi 🤖 ${cwd}`;
       const message = `${cwd} - Your lucky emojis for the day are: ${getRandomEmojis()}`;
-      await sendNotification(config.topic, title, message, sessionId, ctx);
+      const clickUrl = resolveClickUrl({
+        sessionId: ctx.sessionManager.getSessionId() ?? sequenceId,
+        sequenceId,
+        sessionFile: ctx.sessionManager.getSessionFile(),
+        cwd: ctx.cwd,
+        title,
+        topic: config.topic,
+      });
+      await sendNotification(config.topic, title, message, sequenceId, { clickUrl, ctx });
     },
   });
 }
