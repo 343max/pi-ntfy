@@ -65,12 +65,23 @@ async function getIdleTimeSeconds(): Promise<number> {
   return Infinity;
 }
 
+// ntfy itself is cross-platform; only Windows is out of scope, since the idle
+// probe below and the ntfy client config path both assume a POSIX box.
+function isSupportedPlatform(): boolean {
+  return process.platform !== "win32";
+}
+
 // The idle gate exists so we only ping you once you have walked away from the
 // terminal. In the web UI the "terminal" is a browser on your phone, which you
 // may well be holding while sitting at this Mac — HID idle time here says
 // nothing about whether you are watching pi. Skip the check and always notify.
+//
+// Same conclusion on Linux, for a different reason: getIdleTimeSeconds() is
+// macOS-only (ioreg), and these boxes are headless servers where there is no
+// keyboard to be idle at in the first place.
 async function passesIdleGate(): Promise<boolean> {
   if (insideWebUI) return true;
+  if (process.platform !== "darwin") return true;
   return (await getIdleTimeSeconds()) >= config.idleSeconds;
 }
 
@@ -264,7 +275,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_end", async (event, ctx) => {
     if (!isNotifiableSession(ctx.mode)) return;
     if (config.disabled) return;
-    if (process.platform !== "darwin") return;
+    if (!isSupportedPlatform()) return;
 
     if (!(await passesIdleGate())) return;
 
@@ -345,7 +356,7 @@ export default function (pi: ExtensionAPI) {
   // without this hook a question asked while you're away never notifies.
   async function notifyOnAskUser(data: unknown): Promise<void> {
     if (config.disabled) return;
-    if (process.platform !== "darwin") return;
+    if (!isSupportedPlatform()) return;
     if (!isNotifiableSession(sessionMode)) return;
     if (!sessionCwd) return;
 
