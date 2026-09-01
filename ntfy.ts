@@ -19,6 +19,28 @@ const config = {
     "https://pi-macbook.tun.43v.de/?session=<sessionid>",
 };
 
+// True when this extension is running inside the pi-web server process.
+//
+// pi-web binds extensions with mode "rpc" (never "tui"), so ctx.mode alone
+// cannot tell a browser session apart from a real `--mode rpc` client such as
+// pi-acp. The launcher spawns its Next server child with PI_WEB_HOSTNAME
+// always set (@agegr/pi-web bin/pi-web.js:70; the hostname falls back to
+// "127.0.0.1" in bin/pi-web-options.js:38, so it is never absent), and our
+// extension code runs inside that child.
+//
+// NOTE: this is an internal pi-web implementation detail, not a public
+// extension API. If notifications from the web UI ever go quiet again, check
+// that this variable is still exported by the launcher.
+const insideWebUI = Boolean(process.env.PI_WEB_HOSTNAME);
+
+// Which sessions are allowed to notify: an interactive terminal, or the web
+// UI. Still suppresses -p, --mode json, and genuine --mode rpc clients, where
+// there is no human to walk away from. Requiring insideWebUI on top of the
+// "rpc" mode keeps a stray exported PI_WEB_HOSTNAME from unmuting those.
+function isNotifiableSession(mode: string | undefined): boolean {
+  return mode === "tui" || (mode === "rpc" && insideWebUI);
+}
+
 // Session-scoped state captured on session_start, so event-bus handlers
 // (which receive no ctx) can build the same notification payload.
 let sessionCwd: string | undefined;
@@ -41,6 +63,15 @@ async function getIdleTimeSeconds(): Promise<number> {
   }
   // Return Infinity to trigger notification on failure (fail open)
   return Infinity;
+}
+
+// The idle gate exists so we only ping you once you have walked away from the
+// terminal. In the web UI the "terminal" is a browser on your phone, which you
+// may well be holding while sitting at this Mac — HID idle time here says
+// nothing about whether you are watching pi. Skip the check and always notify.
+async function passesIdleGate(): Promise<boolean> {
+  if (insideWebUI) return true;
+  return (await getIdleTimeSeconds()) >= config.idleSeconds;
 }
 
 // Extract text from the last assistant message
@@ -231,14 +262,11 @@ export default function (pi: ExtensionAPI) {
 
   // Main logic: check idle and notify
   pi.on("agent_end", async (event, ctx) => {
-    // Only notify in interactive TUI sessions. Suppresses -p, --mode json, and
-    // --mode rpc, where there is no human at the terminal to walk away from.
-    if (ctx.mode !== "tui") return;
+    if (!isNotifiableSession(ctx.mode)) return;
     if (config.disabled) return;
     if (process.platform !== "darwin") return;
 
-    const idleSeconds = await getIdleTimeSeconds();
-    if (idleSeconds < config.idleSeconds) return;
+    if (!(await passesIdleGate())) return;
 
     const text = getLastAssistantText(event.messages);
     if (!text) return;
@@ -318,7 +346,7 @@ export default function (pi: ExtensionAPI) {
   async function notifyOnAskUser(data: unknown): Promise<void> {
     if (config.disabled) return;
     if (process.platform !== "darwin") return;
-    if (sessionMode !== "tui") return;
+    if (!isNotifiableSession(sessionMode)) return;
     if (!sessionCwd) return;
 
     const payload = data as { questions?: Array<{ question?: string }> };
@@ -326,8 +354,7 @@ export default function (pi: ExtensionAPI) {
     const question = questions[0]?.question;
     if (!question) return;
 
-    const idleSeconds = await getIdleTimeSeconds();
-    if (idleSeconds < config.idleSeconds) return;
+    if (!(await passesIdleGate())) return;
 
     const extra = questions.length > 1 ? ` (+${questions.length - 1} more)` : "";
     const message = `Question: ${question}${extra}`.slice(0, 400);
