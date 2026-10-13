@@ -13,10 +13,8 @@ const config = {
   disabled: process.env.PI_NTFY_DISABLED === "1",
   // URL template opened when the notification is tapped. Supports
   // {placeholder} and <placeholder> tokens, see buildClickVars().
-  // Empty string disables the click action.
-  clickUrl:
-    process.env.PI_NTFY_CLICK_URL ||
-    "https://pi-macbook.tun.43v.de/?session=<sessionid>",
+  // Empty or unset disables the click action.
+  clickUrl: process.env.PI_NTFY_CLICK_URL ?? "",
 };
 
 // True when this extension is running inside the pi-web server process.

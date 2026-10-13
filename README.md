@@ -24,22 +24,21 @@ Sends push notifications via [ntfy.sh](https://ntfy.sh) when the pi agent comple
 
 Environment variables:
 
-| Variable               | Default                                                      | Description                         |
-| ---------------------- | ------------------------------------------------------------ | ----------------------------------- |
-| `PI_NTFY_TOPIC`        | `pi`                                                         | ntfy topic to publish to            |
-| `PI_NTFY_IDLE_SECONDS` | `20`                                                         | Idle time threshold (seconds)       |
-| `PI_NTFY_DISABLED`     | -                                                            | Set to `1` to disable notifications |
-| `PI_NTFY_CLICK_URL`    | `https://pi-macbook.tun.43v.de/?session=<sessionid>` | URL opened when the notification is tapped; set to empty to disable |
+| Variable               | Default | Description                         |
+| ---------------------- | ------- | ----------------------------------- |
+| `PI_NTFY_TOPIC`        | `pi`    | ntfy topic to publish to            |
+| `PI_NTFY_IDLE_SECONDS` | `20`    | Idle time threshold (seconds)       |
+| `PI_NTFY_DISABLED`     | -       | Set to `1` to disable notifications |
+| `PI_NTFY_CLICK_URL`    | -       | URL opened when the notification is tapped; unset/empty disables it |
 
 ## Click URL
 
 Set `PI_NTFY_CLICK_URL` to a URL template that is opened when a notification is
-**tapped** on your phone (ntfy's `--click` action). Leave it empty to disable
-click actions.
+**tapped** on your phone (ntfy's `--click` action). Leave it empty (the default)
+to disable click actions.
 
-The extension ships with a default that deep-links to a pi session web view
-on a Tailscale hostname. Override it in your shell config to change the target
-or to disable click actions entirely:
+There is no built-in target: set it in your shell config to deep-link to a
+session view:
 
 ```fish
 # ~/.config/fish/config.fish (or your shell's rc file)
@@ -57,6 +56,8 @@ are supported (case-insensitive), so both of these work:
 https://pi-macbook.tun.43v.de/?session=<sessionid>
 https://pi-macbook.tun.43v.de/?session={sessionId}
 ```
+
+See the placeholders table below for the full list of supported variables.
 
 Available placeholders:
 
